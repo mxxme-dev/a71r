@@ -1,0 +1,67 @@
+name: Build & Package A71 Kernel
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-android-
+      AUTO_BUILD: "1"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential clang libncurses-dev libssl-dev bc flex bison \
+            zip unzip gcc-aarch64-linux-android
+
+      - name: Build the kernel (non-interactive)
+        run: |
+          # ensure build scripts are in place
+          cp system.sh.sample system.sh || true
+          echo "AUTO_BUILD=1" >> system.sh
+          chmod +x build_kernel.sh
+          ./build_kernel.sh
+
+      - name: Create flashable ZIP
+        run: |
+          OUT=out/arch/arm64/boot
+          ZIPDIR=flashable
+          mkdir -p $ZIPDIR/{modules,dts}
+          # copy kernel & dtbs
+          cp $OUT/Image.gz-dtb           $ZIPDIR/
+          cp $OUT/dts/*.dtb              $ZIPDIR/dts/
+
+          # install modules into flashable/modules
+          make O=out modules_install INSTALL_MOD_PATH=$PWD/$ZIPDIR/modules
+
+          # minimal updater-script
+          mkdir -p $ZIPDIR/META-INF/com/google/android
+          cat > $ZIPDIR/META-INF/com/google/android/updater-script << 'EOF'
+ui_print("Flashing custom A71 kernel…");
+package_extract_file("Image.gz-dtb", "/tmp/Image.gz-dtb");
+run_program("/sbin/flash_image", "boot", "/tmp/Image.gz-dtb");
+ui_print("Done!");
+EOF
+
+          # zip it up
+          cd $ZIPDIR
+          zip -r ../a71-kernel-$(date +%Y%m%d)-flashable.zip ./*
+          cd ..
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v3.6.0
+        with:
+          name: a71-flashable-zip
+          path: a71-kernel-*-flashable.zip
