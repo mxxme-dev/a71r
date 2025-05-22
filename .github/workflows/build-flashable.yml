@@ -1,0 +1,69 @@
+# .github/workflows/build-flashable.yml
+name: Build & Package A71 Kernel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-android-
+      # Tell build_kernel.sh to skip menuconfig:
+      AUTO_BUILD: "1"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential clang libncurses-dev libssl-dev bc flex bison \
+            zip unzip gcc-aarch64-linux-android
+
+      - name: Build the kernel (non-interactive)
+        run: |
+          # If build_kernel.sh expects system.sh, bootstrap it:
+          cp system.sh.sample system.sh || true
+          echo "AUTO_BUILD=1" >> system.sh
+          chmod +x build_kernel.sh
+          ./build_kernel.sh
+
+      - name: Create flashable ZIP
+        run: |
+          # adjust paths below if your build script outputs elsewhere
+          OUT=out/arch/arm64/boot
+          ZIPDIR=flashable
+          mkdir $ZIPDIR
+          cp $OUT/Image.gz-dtb              $ZIPDIR/kernel Image.gz-dtb
+          # include any dtbo or dtb blobs if needed:
+          cp $OUT/dts/*.dtb                 $ZIPDIR/
+          # include modules (optional):
+          mkdir -p $ZIPDIR/modules
+          make O=out modules_install INSTALL_MOD_PATH=$PWD/$ZIPDIR/modules
+
+          # create a minimal META-INF for a generic flashable zip:
+          cat > $ZIPDIR/META-INF/com/google/android/updater-script << 'EOF'
+          ui_print("Flashing custom A71 kernel…");
+          package_extract_file("Image.gz-dtb", "/tmp/Image.gz-dtb");
+          run_program("/sbin/flash_image", "boot", "/tmp/Image.gz-dtb");
+          ui_print("Done!");
+          EOF
+
+          # zip it up:
+          cd $ZIPDIR
+          zip -r ../a71-kernel-$(date +%Y%m%d)-flashable.zip ./*
+          cd ..
+
+      - name: Upload flashable ZIP
+        uses: actions/upload-artifact@v2.3.1
+        with:
+          name: a71-flashable-zip
+          path: a71-kernel-*-flashable.zip
